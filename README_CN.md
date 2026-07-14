@@ -7,6 +7,15 @@ ncnn-omni 是一个处于早期阶段、面向端侧的轻量级 C++ 多模态�
 不把所有多模态模型都简化为“文本 LLM 加一个视觉分支”。首批架构验证模型为
 Qwen3-ASR、一个 Qwen VLM 和 Qwen3-TTS。
 
+## 支持的模型
+
+| 模型 | 任务 | ncnn 模型 |
+|---|---|---|
+| Qwen3-ASR-0.6B | 自动语音识别 | [Qwen3-ASR-0.6B-ncnn](https://huggingface.co/songqiuyu/Qwen3-ASR-0.6B-ncnn) |
+
+更多转换后的 ncnn 模型及相关资源可以访问
+[songqiuyu 的 Hugging Face 主页](https://huggingface.co/songqiuyu)。
+
 ## 当前状态
 
 项目目前处于设计和目录搭建阶段，尚未声明稳定公共 API 或可运行推理库。
@@ -34,3 +43,15 @@ tests/               单元、集成和精度对齐测试
 
 第一条实现路径是 Qwen3-ASR CPU 纵向切片。在 ASR、VLM 和流式 TTS 共同验证
 公共抽象之前，所有接口均保持实验状态。
+
+## Star 趋势
+
+<p align="center">
+  <a href="https://www.star-history.com/songqiuyu/ncnn-omni">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=songqiuyu/ncnn-omni&type=Date&theme=dark" />
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=songqiuyu/ncnn-omni&type=Date" />
+      <img alt="ncnn-omni Star 趋势图" src="https://api.star-history.com/svg?repos=songqiuyu/ncnn-omni&type=Date" />
+    </picture>
+  </a>
+</p>

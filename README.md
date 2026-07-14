@@ -15,6 +15,15 @@ supports different model topologies instead of treating every multimodal model a
 a vision extension of a text LLM. Initial architecture-validation targets are
 Qwen3-ASR, a Qwen VLM, and Qwen3-TTS.
 
+## Supported Models
+
+| Model | Task | ncnn Model |
+|---|---|---|
+| Qwen3-ASR-0.6B | Automatic speech recognition | [Qwen3-ASR-0.6B-ncnn](https://huggingface.co/songqiuyu/Qwen3-ASR-0.6B-ncnn) |
+
+More converted ncnn models and related artifacts are available on
+[songqiuyu's Hugging Face profile](https://huggingface.co/songqiuyu).
+
 ## Current status
 
 The project is in the design/scaffolding phase. No stable public API or runnable
@@ -43,3 +52,15 @@ tests/               unit, integration, and parity tests
 
 Implementation starts with a CPU Qwen3-ASR vertical slice. Public interfaces stay
 experimental until ASR, VLM, and streaming TTS validate the shared abstractions.
+
+## Star History
+
+<p align="center">
+  <a href="https://www.star-history.com/songqiuyu/ncnn-omni">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=songqiuyu/ncnn-omni&type=Date&theme=dark" />
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=songqiuyu/ncnn-omni&type=Date" />
+      <img alt="ncnn-omni Star History Chart" src="https://api.star-history.com/svg?repos=songqiuyu/ncnn-omni&type=Date" />
+    </picture>
+  </a>
+</p>
