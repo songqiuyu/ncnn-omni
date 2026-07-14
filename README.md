@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/banner.png" alt="ncnn-omni banner" width="100%">
+</p>
+
 [![license](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE) [![Language](https://img.shields.io/badge/Language-简体中文-green)](README_CN.md) [![Model](https://img.shields.io/badge/ncnn_omni-HuggingFace-yellow)](https://huggingface.co/songqiuyu)
 
 # ncnn-omni
