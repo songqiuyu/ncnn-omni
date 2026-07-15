@@ -20,6 +20,29 @@ cmake -S . -B build \
 cmake --build build -j4
 ```
 
+如果只需要 CLI，不编译单元测试和诊断工具，可以使用最小构建：
+
+```bash
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -Dncnn_DIR=/path/to/ncnn/lib/cmake/ncnn \
+  -DNCNN_OMNI_BUILD_TESTS=OFF \
+  -DNCNN_OMNI_BUILD_TOOLS=OFF
+cmake --build build --target ncnn-omni-asr -j4
+```
+
+单配置构建器的产物是：
+
+```text
+build/ncnn-omni-asr
+```
+
+Visual Studio 等多配置构建器通常生成：
+
+```text
+build/Release/ncnn-omni-asr.exe
+```
+
 若导入的 ncnn package 在链接接口中启用了 OpenMP，CMake 还必须能找到对应的
 OpenMP runtime。AppleClang 环境可安装 `libomp`，必要时显式传入：
 
@@ -46,7 +69,37 @@ cmake --build build -j4
 Qwen3-ASR-0.6B 模型资源目录，第一版从中读取 `vocab.json` 和 `merges.txt`，不会
 加载原始 Transformers 权重。
 
+`--model` 目录必须包含：
+
+```text
+audio_conv.ncnn.param
+audio_conv.ncnn.bin
+audio_transformer.ncnn.param
+audio_transformer.ncnn.bin
+embed_token.ncnn.param
+embed_token.ncnn.bin
+decoder.ncnn.param
+decoder.ncnn.bin
+lm_head.ncnn.param
+lm_head.ncnn.bin
+```
+
+`--assets` 运行时实际需要：
+
+```text
+vocab.json
+merges.txt
+```
+
 ## 推理
+
+先确认 CLI 可以启动：
+
+```bash
+./build/ncnn-omni-asr --help
+```
+
+自动识别语言：
 
 ```bash
 ./build/ncnn-omni-asr \
@@ -57,7 +110,57 @@ Qwen3-ASR-0.6B 模型资源目录，第一版从中读取 `vocab.json` 和 `merg
   --threads 8
 ```
 
-可使用 `--language Chinese` 强制语言，或使用 `--context TEXT` 提供上下文。
+强制中文并提供上下文：
+
+```bash
+./build/ncnn-omni-asr \
+  --model /path/to/qwen3-asr-0.6b-ncnn \
+  --assets /path/to/Qwen3-ASR-0.6B \
+  --audio /path/to/16k-mono.wav \
+  --language Chinese \
+  --context "会议讨论移动端模型部署。" \
+  --max-new-tokens 128 \
+  --threads 8
+```
+
+参数含义：
+
+| 参数 | 必需 | 说明 |
+|---|---|---|
+| `--model DIR` | 是 | 五个 ncnn 子模型目录 |
+| `--assets DIR` | 是 | `vocab.json` 和 `merges.txt` 所在目录 |
+| `--audio FILE` | 是 | mono 16 kHz PCM16/float32 WAV |
+| `--language NAME` | 否 | 强制语言；不传则由模型识别 |
+| `--context TEXT` | 否 | 提供转写上下文，不是输出后处理 |
+| `--max-new-tokens N` | 否 | 最大生成 token 数，默认 256 |
+| `--threads N` | 否 | ncnn CPU 线程数，默认使用硬件并发数 |
+
+如果输入音频不是 16 kHz mono，可以先转换：
+
+```bash
+ffmpeg -i input.wav -ar 16000 -ac 1 -c:a pcm_s16le audio_16k_mono.wav
+```
+
+## 输出说明
+
+CLI 输出示例：
+
+```text
+language: English
+text: Hmm. Oh yeah, yeah. ...
+raw: language English<asr_text>Hmm. Oh yeah, yeah. ...
+tokens: 47
+token_ids: 11528 6364 151704 ...
+timing_ms: frontend=80.508 audio_encoder=590.83 prefill=875.349 decode=2560.78
+```
+
+- `language`：自动识别或强制指定的语言；
+- `text`：解析后的最终转写文本；
+- `raw`：模型原始解码结果，用于排查 tokenizer/后处理问题；
+- `tokens/token_ids`：生成序列，用于严格 parity；
+- `timing_ms`：前处理、音频编码、prefill 和逐 token decode 耗时。
+
+正常完成返回码为 `0`；参数错误返回 `2`；音频、模型加载或推理失败返回 `1`。
 
 ## 当前输入约束
 

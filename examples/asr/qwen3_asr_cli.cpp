@@ -6,11 +6,20 @@
 
 namespace {
 
-void usage(const char* program)
+void usage(std::ostream& stream, const char* program)
 {
-    std::cerr << "Usage: " << program
-              << " --model DIR --assets DIR --audio FILE [--language NAME]"
-                 " [--context TEXT] [--max-new-tokens N] [--threads N]\n";
+    stream << "Usage: " << program
+           << " --model DIR --assets DIR --audio FILE [options]\n\n"
+              "Required:\n"
+              "  --model DIR          Directory containing the five ncnn model pairs\n"
+              "  --assets DIR         Directory containing vocab.json and merges.txt\n"
+              "  --audio FILE         Mono 16 kHz PCM16/float32 WAV file\n\n"
+              "Options:\n"
+              "  --language NAME      Force a language, for example Chinese or English\n"
+              "  --context TEXT       Add transcription context\n"
+              "  --max-new-tokens N   Generation limit (default: 256)\n"
+              "  --threads N          ncnn CPU threads (default: hardware concurrency)\n"
+              "  -h, --help           Show this help\n";
 }
 
 } // namespace
@@ -24,8 +33,12 @@ int main(int argc, char** argv)
     ncnn_omni::AsrOptions options;
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
+        if (argument == "-h" || argument == "--help") {
+            usage(std::cout, argv[0]);
+            return 0;
+        }
         if (i + 1 >= argc) {
-            usage(argv[0]);
+            usage(std::cerr, argv[0]);
             return 2;
         }
         const std::string value = argv[++i];
@@ -38,12 +51,12 @@ int main(int argc, char** argv)
         else if (argument == "--threads") threads = std::atoi(value.c_str());
         else {
             std::cerr << "Unknown argument: " << argument << '\n';
-            usage(argv[0]);
+            usage(std::cerr, argv[0]);
             return 2;
         }
     }
     if (model.empty() || assets.empty() || audio_path.empty()) {
-        usage(argv[0]);
+        usage(std::cerr, argv[0]);
         return 2;
     }
 
