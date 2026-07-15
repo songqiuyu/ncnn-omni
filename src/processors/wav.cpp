@@ -1,8 +1,9 @@
 #include "ncnn_omni/qwen3_asr.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <fstream>
-#include <limits>
 
 namespace ncnn_omni {
 namespace {
@@ -83,6 +84,17 @@ Result<AudioBuffer> load_pcm_wav(const std::string& path)
     } else {
         return Result<AudioBuffer>("first version supports PCM16 or float32 WAV only");
     }
+
+    // Match qwen_asr.inference.utils.float_range_normalize. PCM16 decoding is
+    // already in range, while float WAV inputs can legally contain values
+    // outside [-1, 1]. Qwen scales those inputs by their absolute peak, then
+    // clips the final waveform.
+    float peak = 0.f;
+    for (float value : audio.samples) peak = std::max(peak, std::abs(value));
+    if (peak > 1.f) {
+        for (float& value : audio.samples) value /= peak;
+    }
+    for (float& value : audio.samples) value = std::clamp(value, -1.f, 1.f);
     return Result<AudioBuffer>(std::move(audio));
 }
 

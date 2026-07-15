@@ -13,6 +13,13 @@ struct LogMelFeatures {
     std::vector<float> values;
 };
 
+// Canonicalize a waveform for Qwen3-ASR's processor/model boundary. The
+// upstream feature extractor produces floor(N / 160) Mel frames but a
+// ceil(N / 160) feature mask for a partial final hop, which makes the audio
+// tower fail. Applying the same zero pad before both reference and ncnn paths
+// preserves every original sample and makes that boundary self-consistent.
+std::vector<float> prepare_qwen3_asr_frontend_samples(const std::vector<float>& samples);
+
 class WhisperLogMel {
 public:
     WhisperLogMel();
@@ -23,6 +30,9 @@ public:
 
 private:
     std::vector<double> hann_;
+    // Precomputed [201, 400] DFT coefficients avoid trigonometric work per frame.
+    std::vector<double> dft_cos_;
+    std::vector<double> dft_sin_;
     // Row-major [128, 201].
     std::vector<double> mel_filters_;
 };

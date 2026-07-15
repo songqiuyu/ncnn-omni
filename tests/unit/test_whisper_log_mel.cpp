@@ -31,4 +31,24 @@ void test_whisper_log_mel()
         if (std::abs(actual - item.value) > 3e-5f)
             throw std::runtime_error("Whisper Log-Mel differs from Transformers reference");
     }
+
+    // WhisperFeatureExtractor does not pad a partial final hop. Centered STFT
+    // yields floor(samples / hop) frames after removing its final frame.
+    samples.push_back(0.f);
+    auto partial_hop = frontend.compute(samples);
+    if (!partial_hop) throw std::runtime_error(partial_hop.error());
+    if (partial_hop.value().frames != 100)
+        throw std::runtime_error("partial-hop Log-Mel shape differs from Transformers");
+
+    const auto canonical = ncnn_omni::prepare_qwen3_asr_frontend_samples(samples);
+    if (canonical.size() != 16160)
+        throw std::runtime_error("Qwen3-ASR final-hop padding length is incorrect");
+    for (size_t i = 0; i < samples.size(); ++i) {
+        if (canonical[i] != samples[i])
+            throw std::runtime_error("Qwen3-ASR final-hop padding changed an original sample");
+    }
+    for (size_t i = samples.size(); i < canonical.size(); ++i) {
+        if (canonical[i] != 0.f)
+            throw std::runtime_error("Qwen3-ASR final-hop padding is not zero");
+    }
 }

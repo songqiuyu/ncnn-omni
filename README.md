@@ -28,7 +28,8 @@ More converted ncnn models and related artifacts are available on
 
 The first CPU FP32 Qwen3-ASR-0.6B vertical slice is runnable. It includes WAV
 loading, Whisper-compatible Log-Mel extraction, all five ncnn modules, greedy
-KV-cache decoding, and token-level parity tooling. The API remains experimental.
+KV-cache decoding, full-frontend numerical parity, and exact generated-token
+parity tooling. The API remains experimental.
 
 - [Design document index](docs/README.md)
 - [Architecture overview](docs/architecture/overview.md)
@@ -36,24 +37,43 @@ KV-cache decoding, and token-level parity tooling. The API remains experimental.
 - [Model package proposal](docs/architecture/model-package.md)
 - [Implementation roadmap](docs/roadmap.md)
 - [Qwen3-ASR first-run guide](docs/guides/qwen3-asr-first-run.md)
+- [Audio frontend parity report](docs/diagnostics/qwen3-asr-audio-frontend-parity.md)
+- [Long-audio root-cause report](docs/diagnostics/qwen3-asr-long-prefill-divergence.md)
 
-## Proposed structure
+## Highlights
+
+- **Pure C++ deployment:** PyTorch and Transformers are used only by offline
+  validation tools, never by the runtime.
+- **Five verified ncnn graphs:** Audio Conv, Audio Transformer, token embedding,
+  text decoder/KV cache, and LM head retain independent differential tests.
+- **Correct graph-external semantics:** Whisper final-hop compatibility, biased
+  Conv tail padding, CPU/SDPA global audio attention, prompt fusion, RoPE, and
+  sentinel KV masking are explicit C++ logic.
+- **Strict evidence:** normalized PCM is sample-exact, complete Log-Mel tensors
+  stay within `2.23e-5` max error, and the current long-audio cases match every
+  greedy token from Transformers.
+- **Correctness-first and inspectable:** deterministic CPU FP32 is the baseline;
+  backend and precision optimizations must establish their own parity results.
+- **Lean hot paths:** Whisper DFT coefficients, RoPE frequencies, and audio
+  positions are precomputed; Conv outputs are written directly into the Audio
+  Transformer input without an intermediate tensor copy.
+
+## Current structure
 
 ```text
-include/ncnn_omni/   public C++ contracts
-src/core/            engine, session, resources
-src/runtime/ncnn/    ncnn-only execution adapter
-src/pipeline/        stages, topology, queues, schedulers
-src/processors/      text, image, and audio processing
-src/generation/      text and audio generation engines
-src/models/          model-family adapters
-bindings/            C and platform-language bindings
-tools/               conversion, inspection, benchmarking
-tests/               unit, integration, and parity tests
+include/ncnn_omni/   compact public Qwen3-ASR API and Result type
+src/models/          Qwen3-ASR orchestration and generation loop
+src/processors/      WAV, Qwen2 tokenizer, and Whisper Log-Mel
+src/runtime/ncnn/    checked ncnn module loading and invocation
+examples/asr/        runnable CLI
+tools/parity/        frontend and end-to-end differential tools
+tests/unit/          deterministic processor/tokenizer tests
+docs/                architecture, research, guides, and evidence
 ```
 
-Implementation starts with a CPU Qwen3-ASR vertical slice. Public interfaces stay
-experimental until ASR, VLM, and streaming TTS validate the shared abstractions.
+Only implemented code is represented by physical directories. The planned
+multimodal engine, VLM, TTS, bindings, and platform layers remain design work in
+the architecture documents until real implementations justify those boundaries.
 
 ## Star History
 

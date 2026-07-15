@@ -20,6 +20,17 @@ cmake -S . -B build \
 cmake --build build -j4
 ```
 
+若导入的 ncnn package 在链接接口中启用了 OpenMP，CMake 还必须能找到对应的
+OpenMP runtime。AppleClang 环境可安装 `libomp`，必要时显式传入：
+
+```bash
+cmake -S . -B build \
+  -Dncnn_DIR=/path/to/ncnn/lib/cmake/ncnn \
+  -DOpenMP_CXX_FLAGS="-Xpreprocessor -fopenmp" \
+  -DOpenMP_CXX_LIB_NAMES=omp \
+  -DOpenMP_omp_LIBRARY=/path/to/libomp.dylib
+```
+
 也可以直接传入 ncnn 源码目录，由同一个 CMake 工程编译：
 
 ```bash
@@ -57,9 +68,21 @@ Qwen3-ASR-0.6B 模型资源目录，第一版从中读取 `vocab.json` 和 `merg
 - greedy decode；
 - 无 batch、流式、时间戳、重采样和 Vulkan。
 
-若采样点数不是 160 的整数倍，运行时只在末尾补不足一个 hop 的零。这样
-Whisper STFT 帧数和 Qwen3-ASR 的 feature attention mask 长度一致，同时避免
-上游对任意长度 WAV 可能出现的 `split_with_sizes` 错误。
+原始 Qwen3-ASR 对非整 hop 音频会产生 `floor(N/160)` 个 Log-Mel 帧和
+`ceil(N/160)` 长度的 feature attention mask，随后可能在 Audio Encoder 内触发
+`split_with_sizes`。ncnn-omni 定义了明确的兼容规范：在归一化 PCM 尾部只补足
+最后一个 160-sample hop，并要求 PyTorch parity 路径使用同一份 canonical PCM。
+从 centered STFT 开始完全复用 Qwen 的参数和数值语义；这一步不截断或改动任何
+原始样本，只增加最多 159 个尾部零。
+
+长音频还有两个不能省略的执行约束：
+
+- Audio Conv 的最后一个 Mel chunk 必须按同批最大宽度显式补零到 100 帧，完成
+  三层带 bias 的 Conv/GELU 后，再裁剪到真实输出长度；直接用短 tensor 推理会
+  改变尾 token。
+- 当前第一版对齐 Transformers CPU/SDPA 路径，因此完整 audio token 序列执行
+  全局 Attention。FlashAttention varlen 的 104-token 分窗是另一种模型执行策略，
+  不能作为性能优化静默替换。
 
 ## 对齐验证
 
@@ -68,6 +91,16 @@ Whisper STFT 帧数和 Qwen3-ASR 的 feature attention mask 长度一致，同�
 ```bash
 QWEN3_ASR_ASSETS=/path/to/Qwen3-ASR-0.6B \
   ./build/ncnn-omni-unit-tests
+```
+
+完整归一化 PCM、feature mask 和 Log-Mel tensor 对齐：
+
+```bash
+python tools/parity/qwen3_asr_frontend_parity.py \
+  --dump-binary build/ncnn-omni-qwen3-asr-frontend-dump \
+  --assets /path/to/Qwen3-ASR-0.6B \
+  --audio /path/to/16k-mono.wav \
+  --report /tmp/qwen3_asr_frontend_parity.json
 ```
 
 完整 token 级对齐：
@@ -82,3 +115,8 @@ python tools/parity/qwen3_asr_e2e.py \
 
 脚本只在开发验证时加载 Transformers 模型；ncnn-omni 的实际推理不依赖
 PyTorch、Transformers、NumPy 或 SoundFile。
+
+当前固定回归覆盖 4.20 s、8.41 s、15.05 s 和 19.26 s 四组音频，对应生成
+10、17、47 和 61 个 token，均与 Transformers 逐项相等。长音频问题的定位过程、
+反证实验和修复数据见
+[长音频 token 分叉诊断](../diagnostics/qwen3-asr-long-prefill-divergence.md)。

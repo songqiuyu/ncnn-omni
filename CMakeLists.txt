@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 project(ncnn_omni VERSION 0.1.0 LANGUAGES CXX)
 
 option(NCNN_OMNI_BUILD_TESTS "Build ncnn-omni tests" ON)
+option(NCNN_OMNI_BUILD_TOOLS "Build ncnn-omni validation tools" ON)
 set(NCNN_OMNI_NCNN_SOURCE "" CACHE PATH "Path to an ncnn source checkout")
 
 if(TARGET ncnn)
@@ -41,6 +42,13 @@ endif()
 
 add_executable(ncnn-omni-asr examples/asr/qwen3_asr_cli.cpp)
 target_link_libraries(ncnn-omni-asr PRIVATE ncnn_omni)
+
+if(NCNN_OMNI_BUILD_TOOLS)
+    add_executable(ncnn-omni-qwen3-asr-frontend-dump
+        tools/parity/qwen3_asr_frontend_dump.cpp)
+    target_include_directories(ncnn-omni-qwen3-asr-frontend-dump PRIVATE src)
+    target_link_libraries(ncnn-omni-qwen3-asr-frontend-dump PRIVATE ncnn_omni)
+endif()
 
 if(NCNN_OMNI_BUILD_TESTS)
     enable_testing()

@@ -1,6 +1,6 @@
-# 第一阶段：Qwen3-ASR-0.6B NCNN 推理实现计划
+# 第一阶段：Qwen3-ASR-0.6B NCNN 推理实现与状态
 
-状态：第一版 CPU FP32 纵向链路已实现并完成单条官方样例的 token 级对齐
+状态：第一版 CPU FP32 纵向链路已实现，四组长短音频均完成 token 级对齐
 
 更新日期：2026-07-15
 
@@ -94,7 +94,7 @@ Qwen3ASRModel.transcribe
 | 模块 | 文件 | 当前验证情况 |
 |---|---|---|
 | Audio Conv | `audio_conv.ncnn.param/bin` | CPU FP32 动态宽度 1–100 已与 PyTorch 对齐 |
-| Audio Transformer | `audio_transformer.ncnn.param/bin` | CPU FP32 长度 1–104 已与 PyTorch 对齐 |
+| Audio Transformer | `audio_transformer.ncnn.param/bin` | CPU FP32 已验证边界长度 1–104，以及 dense `L=196/251` |
 | Token Embedding | `embed_token.ncnn.param/bin` | Token ID 边界和随机输入已对齐 |
 | Text Decoder | `decoder.ncnn.param/bin` | 28 层、56 路 KV；prefill、decode、chunked 和 prefill→decode 已通过差分测试 |
 | LM Head | `lm_head.ncnn.param/bin` | 1024→151936 logits 已对齐 |
@@ -112,28 +112,27 @@ head_dim             128
 rope_theta          1000000
 ```
 
-现有验证能够证明各 NCNN 计算子图转换正确，但不能证明完整音频到文本的执行结果
-正确。
+除子图差分外，当前还完成了四组真实音频的逐 token 端到端回归；长英文和中英
+拼接样例分别覆盖 Decoder prompt 211 和 266。详细证据见
+[长音频 token 分叉诊断](../diagnostics/qwen3-asr-long-prefill-divergence.md)。
 
-### 4.2 尚未实现
+### 4.2 第一版已实现的纵向能力
 
 | 能力 | 状态 |
 |---|---|
-| ncnn-omni CMake 构建和可执行程序 | 未实现 |
-| 版本化模型 manifest 和辅助资源 | 未实现 |
-| WAV/PCM 输入 | 未实现 |
-| Whisper 128-bin Log-Mel | 未实现 |
-| Audio Conv 图外分块和位置编码 | 未实现 |
-| Audio Transformer 图外窗口调度 | 未实现 |
-| Qwen Byte-level BPE tokenizer | 未实现 |
-| chat prompt 和 audio placeholder 展开 | 未实现 |
-| text/audio embedding 融合 | 未实现 |
-| RoPE、causal mask 和 KV Session | 未实现 |
-| greedy generation loop | 未实现 |
-| detokenize 和 ASR 输出解析 | 未实现 |
-| 真实音频端到端对齐 | 未实现 |
+| ncnn-omni CMake 构建和 CLI | 已实现 |
+| WAV/PCM 输入和 Whisper 128-bin Log-Mel | 已实现 |
+| Audio Conv 分块、尾块 padding 和位置编码 | 已实现 |
+| CPU/SDPA 全局 Audio Attention 调度 | 已实现 |
+| Qwen Byte-level BPE tokenizer 和 prompt | 已实现 |
+| text/audio embedding 融合 | 已实现 |
+| RoPE、causal mask 和 KV Session | 已实现 |
+| greedy generation、detokenize 和结果解析 | 已实现 |
+| 四组真实音频端到端逐 token 对齐 | 已通过 |
 
-因此当前整体状态应描述为：**模型转换完成，完整推理尚未完成**。
+版本化 manifest、打包自包含 tokenizer 资源、非 CPU 后端和第 3.2 节列出的扩展
+能力仍未实现。当前整体状态是：**模型转换和第一版 CPU FP32 完整推理均已完成，
+公开 API 与跨后端执行策略仍处于实验阶段**。
 
 ## 5. 五个子模型的真实组合方式
 
@@ -146,7 +145,7 @@ LLM 之间、Decoder 的每一次调用之间都有必须在 C++ 中实现的图
   -> 按 100 个 Mel 帧切块
   -> Audio Conv [1, 128, W] -> [ceil(W/8), 896]
   -> 每个 100 帧块独立添加正弦位置编码
-  -> 拼接后按最多 104 个 audio token 切窗口
+  -> CPU/SDPA 对齐模式下整段送入 Audio Transformer
   -> Audio Transformer [L, 896] -> [L, 1024]
   -> 得到 audio embeddings
 
@@ -180,14 +179,19 @@ dither              0.0
 return_attention_mask true
 ```
 
-计划：
+当前实现：
 
 1. 公共 API 先接收 float32 PCM；CLI 提供最小 WAV reader。
-2. 使用小型可移植 FFT 实现 400 点 STFT；不依赖平台音频框架。
-3. 由离线参考工具导出与 Transformers 完全一致的 Hann window 和
-   `128 x 201` Mel filter matrix，作为模型处理器资源。
+2. 使用确定性的 400 点直接 DFT 实现 correctness-first STFT；不依赖平台 FFT
+   或音频框架。
+3. 按 Transformers 相同公式生成 periodic Hann window 和 Slaney-normalized
+   `128 x 201` Mel filter matrix。
 4. 实现 Whisper 的 power spectrum、Mel 投影、log10/clamp 和归一化。
-5. 用 Python 导出的中间 tensor 逐元素验证，而不是只比较最终识别文本。
+5. 对 partial final hop 显式执行 compatibility zero pad；原始 Qwen processor
+   在该边界存在 Mel `floor` 与 mask `ceil` 的已复现不一致。
+6. 使用实际 C++ tensor dump 对四条真实音频和 float32 边界输入完成全 PCM、mask
+   和完整 Log-Mel 验证，详见
+   [音频前处理对齐报告](../diagnostics/qwen3-asr-audio-frontend-parity.md)。
 
 第一版拒绝非 16 kHz 输入。重采样器在端到端正确以后添加。
 
@@ -210,7 +214,8 @@ out0 float32 [ceil(W/8), 896]
 调用方需要：
 
 1. 将 `[128, T]` 按时间轴切成最多 100 帧的块；
-2. 每块独立运行 Audio Conv；
+2. 若长音频尾块不足 100 帧，按上游 `pad_sequence` 语义显式补零到 100，运行
+   Audio Conv 后再裁到真实下采样长度；短于 100 帧且只有一个 chunk 时不补到 100；
 3. 对每块输出添加从位置 0 重新开始的 896 维正弦位置编码；
 4. 只保留该块的真实输出长度；
 5. 按原始顺序拼接。
@@ -227,7 +232,7 @@ out0 float32 [ceil(W/8), 896]
 ```text
 in0  float32 [L, 896]
 out0 float32 [L, 1024]
-1 <= L <= 104
+1 <= L（当前已额外验证 196 和 251）
 ```
 
 上游的有效窗口来自：
@@ -239,9 +244,13 @@ n_window_infer = 800
 800 Mel 帧 -> 104 CNN tokens
 ```
 
-因此 C++ 调用方应将拼接后的 Conv features 按最多 104 token 分块，每块独立
-运行 dense Audio Transformer，最后再拼接。这样等价于上游通过 `cu_seqlens`
-实现的 block-diagonal attention。
+必须根据参考后端选择 Attention policy。第一版对齐的是 CPU/SDPA：上游没有把
+block mask 传给 SDPA，`cu_seqlens` 也不会被 SDPA 使用，因此实际语义是所有
+audio token 的全局 Attention。C++ 必须将拼接后的 Conv features 一次送入 dense
+Audio Transformer。
+
+FlashAttention varlen 路径可能按 104 token window 执行，不能与 CPU/SDPA
+基准混为一谈。未来若支持该策略，需要 manifest 显式声明并建立独立 parity。
 
 ## 7. Prompt、Tokenizer 和 Embedding 融合
 
@@ -391,52 +400,39 @@ language Chinese<asr_text>识别文本
 - 保留原始 decoded string 供差分诊断；
 - 第一版先实现必要解析，不在推理层加入不可追踪的文本“修正”。
 
-## 10. 计划代码布局
+## 10. 当前精简代码布局
 
 ```text
 include/ncnn_omni/
-├── api/qwen3_asr.h
-├── core/status.h
-└── core/types.h
+├── qwen3_asr.h
+└── status.h
 
 src/
-├── runtime/ncnn/
-│   ├── ncnn_module.h/.cpp
-│   └── ncnn_tensor_utils.h/.cpp
-├── processors/audio/
-│   ├── wav_reader.h/.cpp
-│   └── whisper_log_mel.h/.cpp
-├── processors/text/
-│   └── qwen_bpe_tokenizer.h/.cpp
-├── generation/text/
-│   ├── greedy_sampler.h/.cpp
-│   ├── rope.h/.cpp
-│   └── kv_cache.h/.cpp
-└── models/qwen3_asr/
-    ├── qwen3_asr_config.h/.cpp
-    ├── qwen3_asr_audio_encoder.h/.cpp
-    ├── qwen3_asr_text_decoder.h/.cpp
-    ├── qwen3_asr_processor.h/.cpp
-    └── qwen3_asr_model.h/.cpp
+├── runtime/ncnn/ncnn_module.h/.cpp
+├── processors/qwen2_tokenizer.h/.cpp
+├── processors/whisper_log_mel.h/.cpp
+├── processors/wav.cpp
+└── models/qwen3_asr.cpp
 
 examples/asr/
-└── main.cpp
+└── qwen3_asr_cli.cpp
 
-tools/reference/
-└── export_qwen3_asr_fixtures.py
+tools/parity/
+├── qwen3_asr_frontend_dump.cpp
+├── qwen3_asr_frontend_parity.py
+└── qwen3_asr_e2e.py
 
-tests/
-├── unit/
-├── parity/
-└── integration/
+tests/unit/
 ```
 
-文件名允许在实现时微调，但依赖边界不变：只有 `runtime/ncnn` 直接操作 NCNN；
-Qwen3-ASR 特有的调度和 token 规则留在模型适配器中。
+当前只有 `runtime/ncnn` 和模型适配器直接接触 NCNN；通用调用错误检查集中在
+`NcnnModule`，Qwen3-ASR 特有的调度、prompt、RoPE 和 KV 规则留在模型适配器中。
+未实现的 VLM、TTS、bindings 和通用 pipeline 不创建空目录，等真实代码验证边界
+后再增加。
 
 ## 11. 实施里程碑
 
-### M1.0 模型包和参考数据
+### M1.0 模型包和参考数据（部分完成）
 
 - 为 5 个 `.param/.bin` 增加 manifest；
 - 补齐 tokenizer、processor、generation 和精简模型配置；
@@ -451,7 +447,7 @@ PCM
 Log-Mel + valid frame count
 每个 Audio Conv chunk 输出
 加位置编码并拼接后的 features
-每个 Audio Transformer window 输出
+完整 Audio Transformer 输出及不同 Attention policy 的对照输出
 完整 audio embeddings
 prompt string 和 token IDs
 融合后的 prefill embeddings
@@ -461,7 +457,7 @@ prefill hidden、KV 摘要、logits top-k
 最终 raw text、language、text
 ```
 
-### M1.1 最小 C++ 工程和 NcnnModule
+### M1.1 最小 C++ 工程和 NcnnModule（完成）
 
 - CMake 静态库和 CLI target；
 - `find_package(ncnn CONFIG REQUIRED)`；
@@ -470,16 +466,16 @@ prefill hidden、KV 摘要、logits top-k
 - 五个模型 load/smoke；
 - 统一 Status 和阶段计时。
 
-### M1.2 Audio Processor 和 Audio Encoder
+### M1.2 Audio Processor 和 Audio Encoder（完成）
 
 - WAV/PCM；
 - Whisper Log-Mel；
 - 100 帧 Audio Conv 调度；
 - 正弦位置编码；
-- 104 token Audio Transformer 调度；
+- CPU/SDPA 全局 Audio Transformer 调度，并覆盖 L=196/251；
 - 与 reference fixture 逐阶段对齐。
 
-### M1.3 Tokenizer、Prompt 和 Embedding Mixer
+### M1.3 Tokenizer、Prompt 和 Embedding Mixer（完成）
 
 - Qwen byte-level BPE；
 - special tokens；
@@ -489,7 +485,7 @@ prefill hidden、KV 摘要、logits top-k
 - audio embedding 替换；
 - 与 Transformers token IDs 和 fused embeddings 对齐。
 
-### M1.4 Text Decoder Engine
+### M1.4 Text Decoder Engine（完成）
 
 - RoPE；
 - causal/sentinel mask；
@@ -500,7 +496,7 @@ prefill hidden、KV 摘要、logits top-k
 - EOS 和 max token；
 - tokenizer decode。
 
-### M1.5 端到端 CLI
+### M1.5 端到端 CLI（完成）
 
 - 本地音频输入；
 - context；
@@ -509,7 +505,7 @@ prefill hidden、KV 摘要、logits top-k
 - TTFT、prefill、decode、RTF 和峰值近似统计；
 - 明确的错误和非零退出码。
 
-### M1.6 精度验收和回归
+### M1.6 精度验收和回归（进行中：四组长短音频已通过）
 
 - 短中文；
 - 短英文；
@@ -592,7 +588,7 @@ FP32 KV cache 每个真实 token 约为：
 |---|---|---|
 | P0 | sentinel 导致 RoPE 位置整体偏移 | 对原始 Transformers 做 prefill+decode 层级对比，区分物理 cache 与逻辑位置 |
 | P0 | Whisper Log-Mel 实现不一致 | 导出 Mel filter/window 和逐阶段 fixture，不用最终文本掩盖误差 |
-| P0 | 100/104 分块规则错误 | 测试 99/100/101、799/800/801 Mel 帧边界 |
+| P0 | 尾 Conv chunk padding 或 Audio Attention policy 错误 | 测试 99/100/101 Mel 帧、L=104/196/251 和真实长音频 |
 | P0 | Tokenizer special token 行为错误 | prompt token IDs 必须逐 ID 相等 |
 | P0 | 56 路 cache 顺序或 NCNN Mat 维度错误 | 使用命名映射和 shape assertion，不用裸下标散落在代码中 |
 | P1 | 长 prefill 数值误差导致 token 分叉 | 保存 top-k/margin，定位第一分叉 step |

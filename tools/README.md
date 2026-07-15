@@ -1,7 +1,13 @@
-# Tools
+# Validation tools
 
-- `convert/`: offline export/package assembly helpers around pnnx/ncnn tooling;
-- `inspect/`: manifest, capability, tensor-I/O, and memory-profile inspection;
-- `benchmark/`: stage timing, TTFT, tokens/s, RTF, memory, and backend comparison.
+- `parity/qwen3_asr_frontend_dump.cpp` exports normalized PCM and the complete
+  C++ Log-Mel tensor from the production frontend implementation.
+- `parity/qwen3_asr_frontend_parity.py` compares that output with Qwen3-ASR's
+  preprocessing path and writes a machine-readable report.
+- `parity/qwen3_asr_e2e.py` compares every generated greedy token with the
+  Transformers reference.
+- `parity/qwen3_asr_reference.py` contains the small compatibility shim shared
+  by the Python reference tools.
 
-Conversion tools may depend on Python/PyTorch/pnnx. The runtime library must not.
+Python, PyTorch, and Transformers are development-only dependencies. The C++
+runtime and CLI do not depend on them.

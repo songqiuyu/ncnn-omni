@@ -17,7 +17,6 @@ struct AudioBuffer {
 
 struct AsrOptions {
     int max_new_tokens = 256;
-    int num_threads = 0;
     std::string context;
     std::string language;
 };

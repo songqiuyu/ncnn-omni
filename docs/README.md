@@ -17,6 +17,12 @@ devices.
   scope, five-model wiring, milestones, risks, and parity acceptance criteria.
 - [Qwen3-ASR first-run guide](guides/qwen3-asr-first-run.md): build, runtime
   resources, CLI usage, current constraints, and parity commands.
+- [Qwen3-ASR long-prefill divergence](diagnostics/qwen3-asr-long-prefill-divergence.md):
+  falsification experiments, confirmed root causes, fixes, and regression
+  evidence for long-audio token divergence.
+- [Qwen3-ASR audio frontend parity](diagnostics/qwen3-asr-audio-frontend-parity.md):
+  normalized PCM, partial-hop compatibility policy, full Log-Mel tensor
+  metrics, and reproduction command.
 - [ADR-0001](adr/0001-compositional-staged-pipeline.md): why ncnn-omni uses a
   compositional staged pipeline instead of a monolithic model class.
 

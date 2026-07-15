@@ -10,31 +10,13 @@ import argparse
 import re
 import subprocess
 import sys
-import types
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 import torch
 
-
-def transformers_compatibility() -> None:
-    """Keep the local Qwen3-ASR checkout usable with Transformers 4.56."""
-    try:
-        import nagisa  # noqa: F401
-    except ImportError:
-        sys.modules["nagisa"] = types.ModuleType("nagisa")
-
-    import transformers.utils as utils
-    import transformers.utils.generic as generic
-
-    original = generic.check_model_inputs
-
-    def compatible(func=None):
-        return original if func is None else original(func)
-
-    generic.check_model_inputs = compatible
-    utils.check_model_inputs = compatible
+from qwen3_asr_reference import enable_local_qwen_asr
 
 
 def ncnn_tokens(args: argparse.Namespace) -> list[int]:
@@ -57,7 +39,7 @@ def ncnn_tokens(args: argparse.Namespace) -> list[int]:
 
 
 def reference_tokens(args: argparse.Namespace) -> list[int]:
-    transformers_compatibility()
+    enable_local_qwen_asr()
     source_root = args.qwen_asr_source.resolve()
     if str(source_root) not in sys.path:
         sys.path.insert(0, str(source_root))
@@ -66,8 +48,10 @@ def reference_tokens(args: argparse.Namespace) -> list[int]:
     waveform, sample_rate = sf.read(args.audio, dtype="float32", always_2d=False)
     if waveform.ndim != 1 or sample_rate != 16000:
         raise ValueError("parity input must be mono 16 kHz")
+    # Apply the same documented compatibility canonicalization as ncnn-omni.
+    # Without it, upstream Qwen3-ASR has ceil(mask) vs floor(Mel) lengths for
+    # a partial final hop and fails inside split_with_sizes.
     waveform = np.pad(waveform, (0, (-len(waveform)) % 160))
-
     asr = Qwen3ASRModel.from_pretrained(
         str(args.transformers_model),
         dtype=torch.float32,

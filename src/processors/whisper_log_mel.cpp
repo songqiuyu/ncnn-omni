@@ -60,11 +60,29 @@ std::vector<float> reflect_pad(const std::vector<float>& input, int amount)
 
 } // namespace
 
+std::vector<float> prepare_qwen3_asr_frontend_samples(const std::vector<float>& samples)
+{
+    std::vector<float> result = samples;
+    result.resize((result.size() + kHop - 1) / kHop * kHop, 0.f);
+    return result;
+}
+
 WhisperLogMel::WhisperLogMel()
 {
     hann_.resize(kNfft);
     for (int i = 0; i < kNfft; ++i)
         hann_[static_cast<size_t>(i)] = 0.5 - 0.5 * std::cos(2.0 * kPi * i / kNfft);
+
+    dft_cos_.resize(kFreqBins * kNfft);
+    dft_sin_.resize(kFreqBins * kNfft);
+    for (int bin = 0; bin < kFreqBins; ++bin) {
+        for (int n = 0; n < kNfft; ++n) {
+            const double phase = -2.0 * kPi * bin * n / kNfft;
+            const size_t index = static_cast<size_t>(bin * kNfft + n);
+            dft_cos_[index] = std::cos(phase);
+            dft_sin_[index] = std::sin(phase);
+        }
+    }
 
     std::vector<double> filter_hz(kMelBins + 2);
     const double mel_min = hz_to_mel_slaney(0.0);
@@ -114,12 +132,13 @@ Result<LogMelFeatures> WhisperLogMel::compute(const std::vector<float>& samples)
         for (int bin = 0; bin < kFreqBins; ++bin) {
             double re = 0.0;
             double im = 0.0;
+            const double* cos_values = dft_cos_.data() + bin * kNfft;
+            const double* sin_values = dft_sin_.data() + bin * kNfft;
             for (int n = 0; n < kNfft; ++n) {
                 const double sample = static_cast<double>(padded[static_cast<size_t>(offset + n)]) *
                                       hann_[static_cast<size_t>(n)];
-                const double phase = -2.0 * kPi * bin * n / kNfft;
-                re += sample * std::cos(phase);
-                im += sample * std::sin(phase);
+                re += sample * cos_values[n];
+                im += sample * sin_values[n];
             }
             power[static_cast<size_t>(bin)] = re * re + im * im;
         }

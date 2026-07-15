@@ -20,6 +20,7 @@ int main(int argc, char** argv)
     std::string model;
     std::string assets;
     std::string audio_path;
+    int threads = 0;
     ncnn_omni::AsrOptions options;
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
@@ -34,7 +35,7 @@ int main(int argc, char** argv)
         else if (argument == "--language") options.language = value;
         else if (argument == "--context") options.context = value;
         else if (argument == "--max-new-tokens") options.max_new_tokens = std::atoi(value.c_str());
-        else if (argument == "--threads") options.num_threads = std::atoi(value.c_str());
+        else if (argument == "--threads") threads = std::atoi(value.c_str());
         else {
             std::cerr << "Unknown argument: " << argument << '\n';
             usage(argv[0]);
@@ -52,7 +53,7 @@ int main(int argc, char** argv)
         return 1;
     }
     ncnn_omni::Qwen3Asr recognizer;
-    auto loaded = recognizer.load(model, assets, options.num_threads);
+    auto loaded = recognizer.load(model, assets, threads);
     if (!loaded) {
         std::cerr << "Model error: " << loaded.error() << '\n';
         return 1;

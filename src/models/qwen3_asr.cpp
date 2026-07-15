@@ -7,10 +7,10 @@
 #include <net.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
-#include <limits>
 #include <thread>
 
 namespace ncnn_omni {
@@ -22,6 +22,16 @@ constexpr int kLayers = 28;
 constexpr int kKvHeads = 8;
 constexpr int kHeadDim = 128;
 constexpr int kRopeDim = 64;
+constexpr int kAudioChunkFrames = 100;
+constexpr int kAudioChunkTokens = 13;
+constexpr int32_t kVocabSize = 151936;
+constexpr int32_t kEndOfText = 151643;
+constexpr int32_t kImStart = 151644;
+constexpr int32_t kImEnd = 151645;
+constexpr int32_t kAudioStart = 151669;
+constexpr int32_t kAudioEnd = 151670;
+constexpr int32_t kAudioPad = 151676;
+constexpr int32_t kAsrText = 151704;
 constexpr float kMaskValue = -10000.f;
 constexpr double kRopeTheta = 1000000.0;
 
@@ -72,14 +82,69 @@ Result<ncnn::Mat> embed(NcnnModule& module, const std::vector<int32_t>& ids)
     return Result<ncnn::Mat>(std::move(value));
 }
 
+const std::array<double, kRopeDim>& rope_frequencies()
+{
+    static const auto frequencies = [] {
+        std::array<double, kRopeDim> values{};
+        for (int i = 0; i < kRopeDim; ++i)
+            values[static_cast<size_t>(i)] =
+                1.0 / std::pow(kRopeTheta, (2.0 * i) / kHeadDim);
+        return values;
+    }();
+    return frequencies;
+}
+
+const std::array<float, kAudioChunkTokens * kAudioHidden>& audio_positions()
+{
+    static const auto positions = [] {
+        std::array<float, kAudioChunkTokens * kAudioHidden> values{};
+        const double increment = std::log(10000.0) / (kAudioHidden / 2 - 1.0);
+        for (int row = 0; row < kAudioChunkTokens; ++row) {
+            for (int dim = 0; dim < kAudioHidden; ++dim) {
+                const double scale = std::exp(-increment * (dim % (kAudioHidden / 2)));
+                const double angle = row * scale;
+                values[static_cast<size_t>(row * kAudioHidden + dim)] = static_cast<float>(
+                    dim < kAudioHidden / 2 ? std::sin(angle) : std::cos(angle));
+            }
+        }
+        return values;
+    }();
+    return positions;
+}
+
+const std::vector<std::string>& decoder_input_names()
+{
+    static const auto names = [] {
+        std::vector<std::string> values;
+        values.reserve(4 + kLayers * 2);
+        for (int i = 0; i < 4 + kLayers * 2; ++i)
+            values.push_back("in" + std::to_string(i));
+        return values;
+    }();
+    return names;
+}
+
+const std::vector<std::string>& decoder_output_names()
+{
+    static const auto names = [] {
+        std::vector<std::string> values;
+        values.reserve(1 + kLayers * 2);
+        for (int i = 0; i < 1 + kLayers * 2; ++i)
+            values.push_back("out" + std::to_string(i));
+        return values;
+    }();
+    return names;
+}
+
 ncnn::Mat rope(int sequence, int position, bool cosine)
 {
+    const auto& frequencies = rope_frequencies();
     ncnn::Mat result = make_float_2d(sequence, kRopeDim);
     for (int row = 0; row < sequence; ++row) {
         float* values = result.row(row);
         for (int i = 0; i < kRopeDim; ++i) {
-            const double frequency = 1.0 / std::pow(kRopeTheta, (2.0 * i) / kHeadDim);
-            const double angle = static_cast<double>(position + row) * frequency;
+            const double angle = static_cast<double>(position + row) *
+                                 frequencies[static_cast<size_t>(i)];
             values[i] = static_cast<float>(cosine ? std::cos(angle) : std::sin(angle));
         }
     }
@@ -126,19 +191,18 @@ Result<DecoderOutput> run_decoder(NcnnModule& decoder,
     if (static_cast<int>(caches.size()) != kLayers * 2)
         return Result<DecoderOutput>("decoder requires 56 KV tensors");
     const int physical_past = caches[0].h;
+    const auto& input_names = decoder_input_names();
     std::vector<std::pair<std::string, ncnn::Mat>> inputs;
     inputs.reserve(60);
-    inputs.emplace_back("in0", hidden);
-    inputs.emplace_back("in1", causal_mask(sequence, physical_past));
-    inputs.emplace_back("in2", rope(sequence, logical_position, true));
-    inputs.emplace_back("in3", rope(sequence, logical_position, false));
+    inputs.emplace_back(input_names[0], hidden);
+    inputs.emplace_back(input_names[1], causal_mask(sequence, physical_past));
+    inputs.emplace_back(input_names[2], rope(sequence, logical_position, true));
+    inputs.emplace_back(input_names[3], rope(sequence, logical_position, false));
     for (int i = 0; i < kLayers * 2; ++i)
-        inputs.emplace_back("in" + std::to_string(i + 4), caches[static_cast<size_t>(i)]);
+        inputs.emplace_back(input_names[static_cast<size_t>(i + 4)],
+                            caches[static_cast<size_t>(i)]);
 
-    std::vector<std::string> names;
-    names.reserve(57);
-    for (int i = 0; i <= 56; ++i) names.push_back("out" + std::to_string(i));
-    auto outputs = decoder.run(inputs, names);
+    auto outputs = decoder.run(inputs, decoder_output_names());
     if (!outputs) return Result<DecoderOutput>(outputs.error());
     if (outputs.value()[0].dims != 2 || outputs.value()[0].w != kHidden ||
         outputs.value()[0].h != sequence)
@@ -160,10 +224,10 @@ Result<int32_t> next_token(NcnnModule& lm_head, const ncnn::Mat& hidden, int row
     auto output = lm_head.run({{"in0", last}}, {"out0"});
     if (!output) return Result<int32_t>(output.error());
     const ncnn::Mat& logits = output.value()[0];
-    if (logits.total() != 151936) return Result<int32_t>("unexpected LM Head output shape");
+    if (logits.total() != kVocabSize) return Result<int32_t>("unexpected LM Head output shape");
     const float* values = static_cast<const float*>(logits.data);
     int32_t best = 0;
-    for (int32_t i = 1; i < 151936; ++i) {
+    for (int32_t i = 1; i < kVocabSize; ++i) {
         if (values[i] > values[best]) best = i;
     }
     return Result<int32_t>(best);
@@ -186,24 +250,24 @@ Result<std::vector<int32_t>> build_prompt(Qwen2Tokenizer& tokenizer,
         return {};
     };
 
-    ids.push_back(151644); // <|im_start|>
+    ids.push_back(kImStart);
     if (std::string error = add_text("system\n" + options.context); !error.empty())
         return Result<std::vector<int32_t>>(error);
-    ids.push_back(151645);
+    ids.push_back(kImEnd);
     if (std::string error = add_text("\n"); !error.empty()) return Result<std::vector<int32_t>>(error);
-    ids.push_back(151644);
+    ids.push_back(kImStart);
     if (std::string error = add_text("user\n"); !error.empty()) return Result<std::vector<int32_t>>(error);
-    ids.push_back(151669);
-    ids.insert(ids.end(), static_cast<size_t>(audio_tokens), 151676);
-    ids.push_back(151670);
-    ids.push_back(151645);
+    ids.push_back(kAudioStart);
+    ids.insert(ids.end(), static_cast<size_t>(audio_tokens), kAudioPad);
+    ids.push_back(kAudioEnd);
+    ids.push_back(kImEnd);
     if (std::string error = add_text("\n"); !error.empty()) return Result<std::vector<int32_t>>(error);
-    ids.push_back(151644);
+    ids.push_back(kImStart);
     if (std::string error = add_text("assistant\n"); !error.empty()) return Result<std::vector<int32_t>>(error);
     if (!options.language.empty()) {
         if (std::string error = add_text("language " + options.language); !error.empty())
             return Result<std::vector<int32_t>>(error);
-        ids.push_back(151704); // <asr_text> is an AddedToken but is not special for decoding.
+        ids.push_back(kAsrText); // AddedToken, intentionally visible when decoding.
     }
     return Result<std::vector<int32_t>>(std::move(ids));
 }
@@ -267,55 +331,59 @@ public:
         auto load = load_module(audio_conv, model_root, "audio_conv", threads);
         if (!load) return Result<ncnn::Mat>(load.error());
 
-        std::vector<float> conv_rows;
-        int conv_tokens = 0;
-        for (int start = 0; start < mel.frames; start += 100) {
-            const int width = std::min(100, mel.frames - start);
-            ncnn::Mat input(width, 128, 1, static_cast<size_t>(4u), 1);
+        const int full_chunks = mel.frames / kAudioChunkFrames;
+        const int tail_frames = mel.frames % kAudioChunkFrames;
+        const int conv_tokens = full_chunks * kAudioChunkTokens +
+                                (tail_frames == 0 ? 0 : (tail_frames + 7) / 8);
+        ncnn::Mat transformer_input = make_float_2d(conv_tokens, kAudioHidden);
+        int output_row = 0;
+        const auto& positions = audio_positions();
+        for (int start = 0; start < mel.frames; start += kAudioChunkFrames) {
+            const int width = std::min(kAudioChunkFrames, mel.frames - start);
+            // Upstream pad_sequence pads a tail chunk to 100 whenever the
+            // audio also contains at least one full chunk. Explicit input
+            // zeros are not equivalent to a smaller convolution tensor:
+            // convolution bias and GELU make the padded activations nonzero
+            // before the following strided layers.
+            const int padded_width = mel.frames > kAudioChunkFrames ? kAudioChunkFrames : width;
+            ncnn::Mat conv_input(padded_width, 128, 1, static_cast<size_t>(4u), 1);
+            conv_input.fill(0.f);
             for (int bin = 0; bin < 128; ++bin) {
-                float* row = input.channel(0).row(bin);
+                float* row = conv_input.channel(0).row(bin);
                 const float* source = mel.values.data() + static_cast<size_t>(bin * mel.frames + start);
                 std::copy(source, source + width, row);
             }
-            auto output = audio_conv.run({{"in0", input}}, {"out0"});
+            auto output = audio_conv.run({{"in0", conv_input}}, {"out0"});
             if (!output) return Result<ncnn::Mat>(output.error());
             const ncnn::Mat& chunk = output.value()[0];
             const int expected = (width + 7) / 8;
-            if (chunk.dims != 2 || chunk.w != kAudioHidden || chunk.h != expected)
+            const int padded_output = (padded_width + 7) / 8;
+            if (chunk.dims != 2 || chunk.w != kAudioHidden || chunk.h != padded_output)
                 return Result<ncnn::Mat>("unexpected Audio Conv output shape");
-            for (int row_index = 0; row_index < chunk.h; ++row_index) {
-                const float* row = chunk.row(row_index);
-                for (int dim = 0; dim < kAudioHidden; ++dim) {
-                    const double increment = std::log(10000.0) / (kAudioHidden / 2 - 1.0);
-                    const double inv_timescale = std::exp(-increment * (dim % (kAudioHidden / 2)));
-                    const double angle = row_index * inv_timescale;
-                    const float position = static_cast<float>(dim < kAudioHidden / 2 ? std::sin(angle) : std::cos(angle));
-                    conv_rows.push_back(row[dim] + position);
-                }
+            for (int row_index = 0; row_index < expected; ++row_index) {
+                const float* source = chunk.row(row_index);
+                const float* position = positions.data() + row_index * kAudioHidden;
+                float* target = transformer_input.row(output_row++);
+                for (int dim = 0; dim < kAudioHidden; ++dim)
+                    target[dim] = source[dim] + position[dim];
             }
-            conv_tokens += chunk.h;
         }
+        if (output_row != conv_tokens)
+            return Result<ncnn::Mat>("Audio Conv token count mismatch");
         audio_conv.clear();
 
         NcnnModule transformer;
         load = load_module(transformer, model_root, "audio_transformer", threads);
         if (!load) return Result<ncnn::Mat>(load.error());
-        ncnn::Mat audio = make_float_2d(conv_tokens, kHidden);
-        int output_row = 0;
-        for (int start = 0; start < conv_tokens; start += 104) {
-            const int length = std::min(104, conv_tokens - start);
-            ncnn::Mat input = make_float_2d(length, kAudioHidden);
-            std::copy(conv_rows.data() + static_cast<size_t>(start * kAudioHidden),
-                      conv_rows.data() + static_cast<size_t>((start + length) * kAudioHidden),
-                      static_cast<float*>(input.data));
-            auto output = transformer.run({{"in0", input}}, {"out0"});
-            if (!output) return Result<ncnn::Mat>(output.error());
-            const ncnn::Mat& chunk = output.value()[0];
-            if (chunk.dims != 2 || chunk.w != kHidden || chunk.h != length)
-                return Result<ncnn::Mat>("unexpected Audio Transformer output shape");
-            for (int row = 0; row < length; ++row)
-                std::copy(chunk.row(row), chunk.row(row) + kHidden, audio.row(output_row++));
-        }
+        // The reference CPU/SDPA path passes cu_seqlens but no block mask to
+        // SDPA, so all audio tokens attend globally. Splitting at 104 changes
+        // model semantics even though it matches the intended FlashAttention
+        // varlen scheduling. CPU FP32 parity therefore requires one dense call.
+        auto output = transformer.run({{"in0", transformer_input}}, {"out0"});
+        if (!output) return Result<ncnn::Mat>(output.error());
+        ncnn::Mat audio = std::move(output.value()[0]);
+        if (audio.dims != 2 || audio.w != kHidden || audio.h != conv_tokens)
+            return Result<ncnn::Mat>("unexpected Audio Transformer output shape");
         return Result<ncnn::Mat>(std::move(audio));
     }
 
@@ -328,12 +396,10 @@ public:
 
         AsrResult result;
         auto begin = Clock::now();
-        // Qwen3-ASR derives feature_lens from a hop-subsampled attention mask,
-        // which is ceil(samples / 160), while centered STFT yields floor for a
-        // partial final hop. Zero-padding the final partial hop makes both agree
-        // and avoids the upstream split_with_sizes failure on arbitrary WAV sizes.
-        std::vector<float> frontend_samples = audio.samples;
-        frontend_samples.resize((frontend_samples.size() + 159) / 160 * 160, 0.f);
+        // Canonicalize the PCM before both reference and ncnn feature paths.
+        // See prepare_qwen3_asr_frontend_samples for the upstream partial-hop
+        // mask/feature inconsistency that this compatibility step resolves.
+        auto frontend_samples = prepare_qwen3_asr_frontend_samples(audio.samples);
         auto mel = frontend.compute(frontend_samples);
         if (!mel) return Result<AsrResult>(mel.error());
         result.frontend_ms = elapsed_ms(begin);
@@ -353,7 +419,7 @@ public:
         if (!prompt_embeddings) return Result<AsrResult>(prompt_embeddings.error());
         int audio_row = 0;
         for (size_t row = 0; row < prompt.value().size(); ++row) {
-            if (prompt.value()[row] != 151676) continue;
+            if (prompt.value()[row] != kAudioPad) continue;
             if (audio_row >= audio_embeddings.value().h)
                 return Result<AsrResult>("audio placeholder count is smaller than audio embeddings");
             std::copy(audio_embeddings.value().row(audio_row),
@@ -376,6 +442,7 @@ public:
         auto decoded = run_decoder(decoder, prompt_embeddings.value(),
                                    static_cast<int>(prompt.value().size()), 0, sentinel_caches());
         if (!decoded) return Result<AsrResult>(decoded.error());
+        prompt_embeddings.value().release();
         auto token = next_token(lm_head, decoded.value().hidden,
                                 static_cast<int>(prompt.value().size()) - 1);
         if (!token) return Result<AsrResult>(token.error());
@@ -385,7 +452,7 @@ public:
         int logical_position = static_cast<int>(prompt.value().size());
         for (int step = 0; step < options.max_new_tokens; ++step) {
             const int32_t id = token.value();
-            if (id == 151643 || id == 151645) break;
+            if (id == kEndOfText || id == kImEnd) break;
             result.token_ids.push_back(id);
 
             auto token_embedding = embed(embedding, {id});
