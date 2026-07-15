@@ -18,13 +18,16 @@ Qwen3-ASR、一个 Qwen VLM 和 Qwen3-TTS。
 
 ## 当前状态
 
-项目目前处于设计和目录搭建阶段，尚未声明稳定公共 API 或可运行推理库。
+Qwen3-ASR-0.6B 的第一版桌面 CPU FP32 纵向链路已经可以运行，包括 WAV
+读取、Whisper 兼容 Log-Mel、五个 ncnn 子模型、greedy KV-cache 解码和 token
+级对齐工具。公共 API 目前仍为实验状态。
 
 - [设计文档索引](docs/README.md)
 - [总体架构](docs/architecture/overview.md)
 - [推理引擎调研](docs/research/inference-engine-survey.md)
 - [模型包设计](docs/architecture/model-package.md)
 - [实现路线](docs/roadmap.md)
+- [Qwen3-ASR 第一版运行指南](docs/guides/qwen3-asr-first-run.md)
 
 ## 初始目录
 

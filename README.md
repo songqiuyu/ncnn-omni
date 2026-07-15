@@ -26,14 +26,16 @@ More converted ncnn models and related artifacts are available on
 
 ## Current status
 
-The project is in the design/scaffolding phase. No stable public API or runnable
-inference library is claimed yet.
+The first CPU FP32 Qwen3-ASR-0.6B vertical slice is runnable. It includes WAV
+loading, Whisper-compatible Log-Mel extraction, all five ncnn modules, greedy
+KV-cache decoding, and token-level parity tooling. The API remains experimental.
 
 - [Design document index](docs/README.md)
 - [Architecture overview](docs/architecture/overview.md)
 - [Inference engine survey](docs/research/inference-engine-survey.md)
 - [Model package proposal](docs/architecture/model-package.md)
 - [Implementation roadmap](docs/roadmap.md)
+- [Qwen3-ASR first-run guide](docs/guides/qwen3-asr-first-run.md)
 
 ## Proposed structure
 

@@ -13,11 +13,15 @@ devices.
 - [Model package format](architecture/model-package.md): the proposed versioned
   package and manifest contract.
 - [Initial roadmap](roadmap.md): staged delivery and architecture validation gates.
+- [Qwen3-ASR phase 1 plan](plans/qwen3-asr-phase1.md): concrete implementation
+  scope, five-model wiring, milestones, risks, and parity acceptance criteria.
+- [Qwen3-ASR first-run guide](guides/qwen3-asr-first-run.md): build, runtime
+  resources, CLI usage, current constraints, and parity commands.
 - [ADR-0001](adr/0001-compositional-staged-pipeline.md): why ncnn-omni uses a
   compositional staged pipeline instead of a monolithic model class.
 
 ## Status
 
-This is a pre-implementation design baseline. Interface names are proposals, not
-an ABI promise. The first ABI should only be frozen after Qwen3-ASR, one VLM, and
-Qwen3-TTS have validated the shared abstractions.
+The first Qwen3-ASR CPU FP32 vertical slice is implemented. Interface names remain
+proposals, not an ABI promise. The first ABI should only be frozen after
+Qwen3-ASR, one VLM, and Qwen3-TTS have validated the shared abstractions.
