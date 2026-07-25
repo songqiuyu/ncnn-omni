@@ -1,6 +1,6 @@
 #include "ncnn_omni/qwen3_asr.h"
 
-#include "processors/whisper_log_mel.h"
+#include "processors/qwen3_asr_audio_processor.h"
 
 #include <filesystem>
 #include <fstream>
@@ -55,10 +55,10 @@ int main(int argc, char** argv)
         std::cerr << "Audio error: " << audio.error() << '\n';
         return 1;
     }
-    ncnn_omni::WhisperLogMel frontend;
     const std::vector<float> frontend_samples =
-        ncnn_omni::prepare_qwen3_asr_frontend_samples(audio.value().samples);
-    auto features = frontend.compute(frontend_samples);
+        ncnn_omni::Qwen3AsrAudioProcessor::prepare_samples(audio.value().samples);
+    ncnn_omni::Qwen3AsrAudioProcessor processor;
+    auto features = processor.process(audio.value());
     if (!features) {
         std::cerr << "Frontend error: " << features.error() << '\n';
         return 1;

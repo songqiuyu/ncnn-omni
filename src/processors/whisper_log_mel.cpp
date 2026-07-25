@@ -1,4 +1,4 @@
-#include "processors/whisper_log_mel.h"
+#include "ncnn_omni/processors/whisper_log_mel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -59,13 +59,6 @@ std::vector<float> reflect_pad(const std::vector<float>& input, int amount)
 }
 
 } // namespace
-
-std::vector<float> prepare_qwen3_asr_frontend_samples(const std::vector<float>& samples)
-{
-    std::vector<float> result = samples;
-    result.resize((result.size() + kHop - 1) / kHop * kHop, 0.f);
-    return result;
-}
 
 WhisperLogMel::WhisperLogMel()
 {

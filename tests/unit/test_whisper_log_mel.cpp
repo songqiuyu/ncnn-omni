@@ -1,4 +1,5 @@
-#include "processors/whisper_log_mel.h"
+#include "ncnn_omni/processors/whisper_log_mel.h"
+#include "processors/qwen3_asr_audio_processor.h"
 
 #include <cmath>
 #include <stdexcept>
@@ -40,7 +41,7 @@ void test_whisper_log_mel()
     if (partial_hop.value().frames != 100)
         throw std::runtime_error("partial-hop Log-Mel shape differs from Transformers");
 
-    const auto canonical = ncnn_omni::prepare_qwen3_asr_frontend_samples(samples);
+    const auto canonical = ncnn_omni::Qwen3AsrAudioProcessor::prepare_samples(samples);
     if (canonical.size() != 16160)
         throw std::runtime_error("Qwen3-ASR final-hop padding length is incorrect");
     for (size_t i = 0; i < samples.size(); ++i) {
@@ -51,4 +52,12 @@ void test_whisper_log_mel()
         if (canonical[i] != 0.f)
             throw std::runtime_error("Qwen3-ASR final-hop padding is not zero");
     }
+
+    ncnn_omni::AudioBuffer wrong_format;
+    wrong_format.samples = {0.f};
+    wrong_format.sample_rate = 8000;
+    wrong_format.channels = 1;
+    ncnn_omni::Qwen3AsrAudioProcessor processor;
+    if (processor.process(wrong_format))
+        throw std::runtime_error("Qwen3-ASR audio processor accepted 8 kHz PCM");
 }

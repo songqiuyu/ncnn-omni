@@ -26,10 +26,10 @@ More converted ncnn models and related artifacts are available on
 
 ## Current status
 
-The first CPU FP32 Qwen3-ASR-0.6B vertical slice is runnable. It includes WAV
-loading, Whisper-compatible Log-Mel extraction, all five ncnn modules, greedy
-KV-cache decoding, full-frontend numerical parity, and exact generated-token
-parity tooling. The API remains experimental.
+The first CPU FP32 Qwen3-ASR-0.6B vertical slice is runnable. It includes reusable
+audio I/O and Whisper-compatible Log-Mel processing, persistent loaded ncnn
+modules, a model-independent text decoder/KV loop, full-frontend numerical
+parity, and exact generated-token parity tooling. The API remains experimental.
 
 - [Design document index](docs/README.md)
 - [Architecture overview](docs/architecture/overview.md)
@@ -61,10 +61,11 @@ parity tooling. The API remains experimental.
 ## Current structure
 
 ```text
-include/ncnn_omni/   compact public Qwen3-ASR API and Result type
-src/models/          Qwen3-ASR orchestration and generation loop
-src/processors/      WAV, Qwen2 tokenizer, and Whisper Log-Mel
-src/runtime/ncnn/    checked ncnn module loading and invocation
+include/ncnn_omni/   model-independent audio/ASR values and Qwen3-ASR task API
+src/models/          Qwen3-ASR model adapter and embedding orchestration
+src/processors/      WAV, tokenizer, reusable Log-Mel, model audio policy
+src/generation/      model-independent text autoregressive/KV decode loop
+src/runtime/ncnn/    module specs, logical ports, runtime options, invocation
 examples/asr/        runnable CLI
 tools/parity/        frontend and end-to-end differential tools
 tests/unit/          deterministic processor/tokenizer tests

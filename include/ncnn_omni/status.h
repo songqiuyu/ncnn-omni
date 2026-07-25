@@ -15,7 +15,13 @@ public:
 template <typename T>
 class Result {
 public:
-    Result(T value) : value_(std::move(value)) {}
+    // Accept success values only when the caller actually supplies T. Without
+    // this constraint, Result<bool>("error") converts the string pointer to
+    // true and silently reports success instead of selecting the error overload.
+    template <typename U,
+              typename std::enable_if<
+                  std::is_same<typename std::decay<U>::type, T>::value, int>::type = 0>
+    Result(U&& value) : value_(std::forward<U>(value)) {}
     template <typename U = T,
               typename std::enable_if<!std::is_same<U, std::string>::value, int>::type = 0>
     Result(std::string error) : error_(std::move(error)) {}

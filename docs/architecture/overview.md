@@ -1,6 +1,6 @@
 # ncnn-omni architecture
 
-Status: design baseline, pre-implementation
+Status: design baseline, partially implemented by the Qwen3-ASR vertical slice
 
 ## 1. Mission
 

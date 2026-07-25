@@ -18,9 +18,10 @@ Qwen3-ASR、一个 Qwen VLM 和 Qwen3-TTS。
 
 ## 当前状态
 
-Qwen3-ASR-0.6B 的第一版桌面 CPU FP32 纵向链路已经可以运行，包括 WAV
-读取、Whisper 兼容 Log-Mel、五个 ncnn 子模型、greedy KV-cache 解码和 token
-级对齐工具；完整音频前处理 tensor 也已完成数值对齐。公共 API 目前仍为实验状态。
+Qwen3-ASR-0.6B 的第一版桌面 CPU FP32 纵向链路已经可以运行，包括可复用的音频
+I/O 与 Whisper 兼容 Log-Mel、常驻加载的五个 ncnn 子模型、独立的通用文本
+KV-cache 解码器和 token 级对齐工具；完整音频前处理 tensor 也已完成数值对齐。
+公共 API 目前仍为实验状态。
 
 - [设计文档索引](docs/README.md)
 - [总体架构](docs/architecture/overview.md)
@@ -49,10 +50,11 @@ Qwen3-ASR-0.6B 的第一版桌面 CPU FP32 纵向链路已经可以运行，包�
 ## 当前目录
 
 ```text
-include/ncnn_omni/   精简的 Qwen3-ASR 公共 API 和 Result
-src/models/          Qwen3-ASR 编排与生成循环
-src/processors/      WAV、Qwen2 tokenizer 和 Whisper Log-Mel
-src/runtime/ncnn/    带错误检查的 ncnn 模块加载与执行
+include/ncnn_omni/   通用音频/ASR 类型与 Qwen3-ASR 任务 API
+src/models/          Qwen3-ASR 模型适配与 embedding 编排
+src/processors/      WAV、tokenizer、Log-Mel 与模型音频策略
+src/generation/      与任务无关的文本自回归/KV 解码循环
+src/runtime/ncnn/    模块规格、逻辑端口、运行选项与执行
 examples/asr/        可直接运行的 CLI
 tools/parity/        前处理与端到端差分工具
 tests/unit/          确定性的处理器/tokenizer 测试

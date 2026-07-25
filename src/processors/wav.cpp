@@ -1,4 +1,4 @@
-#include "ncnn_omni/qwen3_asr.h"
+#include "ncnn_omni/processors/wav.h"
 
 #include <algorithm>
 #include <cmath>
@@ -65,8 +65,7 @@ Result<AudioBuffer> load_pcm_wav(const std::string& path)
     }
 
     if (!format || data.empty()) return Result<AudioBuffer>("WAV is missing fmt or data chunk");
-    if (channels != 1) return Result<AudioBuffer>("first version requires mono WAV");
-    if (sample_rate != 16000) return Result<AudioBuffer>("first version requires 16 kHz WAV");
+    if (channels == 0) return Result<AudioBuffer>("WAV channel count is zero");
 
     AudioBuffer audio;
     audio.sample_rate = static_cast<int>(sample_rate);
@@ -82,7 +81,7 @@ Result<AudioBuffer> load_pcm_wav(const std::string& path)
         audio.samples.resize(data.size() / 4);
         std::memcpy(audio.samples.data(), data.data(), data.size());
     } else {
-        return Result<AudioBuffer>("first version supports PCM16 or float32 WAV only");
+        return Result<AudioBuffer>("WAV decoder supports PCM16 or float32 only");
     }
 
     // Match qwen_asr.inference.utils.float_range_normalize. PCM16 decoding is

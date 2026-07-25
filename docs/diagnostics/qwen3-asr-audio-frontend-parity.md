@@ -27,7 +27,7 @@ ncnn 端比较的是诊断二进制从实际 C++ 类导出的：
 
 ```text
 load_pcm_wav normalized PCM
--> prepare_qwen3_asr_frontend_samples
+-> Qwen3AsrAudioProcessor::prepare_samples
 -> WhisperLogMel::compute
 ```
 

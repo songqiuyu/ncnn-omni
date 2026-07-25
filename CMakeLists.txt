@@ -22,8 +22,10 @@ else()
 endif()
 
 add_library(ncnn_omni
+    src/generation/text_decoder.cpp
     src/models/qwen3_asr.cpp
     src/processors/qwen2_tokenizer.cpp
+    src/processors/qwen3_asr_audio_processor.cpp
     src/processors/wav.cpp
     src/processors/whisper_log_mel.cpp
     src/runtime/ncnn/ncnn_module.cpp)
@@ -54,6 +56,7 @@ if(NCNN_OMNI_BUILD_TESTS)
     enable_testing()
     add_executable(ncnn-omni-unit-tests
         tests/unit/test_main.cpp
+        tests/unit/test_ncnn_module.cpp
         tests/unit/test_qwen2_tokenizer.cpp
         tests/unit/test_whisper_log_mel.cpp)
     target_include_directories(ncnn-omni-unit-tests PRIVATE src)

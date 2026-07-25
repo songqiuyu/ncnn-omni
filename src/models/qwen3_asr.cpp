@@ -1,7 +1,8 @@
 #include "ncnn_omni/qwen3_asr.h"
 
+#include "generation/text_decoder.h"
 #include "processors/qwen2_tokenizer.h"
-#include "processors/whisper_log_mel.h"
+#include "processors/qwen3_asr_audio_processor.h"
 #include "runtime/ncnn/ncnn_module.h"
 
 #include <net.h>
@@ -11,6 +12,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <mutex>
 #include <thread>
 
 namespace ncnn_omni {
@@ -55,9 +57,18 @@ std::string bin_path(const std::string& root, const std::string& name)
 Result<bool> load_module(NcnnModule& module,
                          const std::string& root,
                          const std::string& name,
-                         int threads)
+                         int threads,
+                         std::vector<NcnnPort> inputs,
+                         std::vector<NcnnPort> outputs)
 {
-    return module.load(param_path(root, name), bin_path(root, name), threads);
+    NcnnModuleSpec spec;
+    spec.id = name;
+    spec.param_path = param_path(root, name);
+    spec.bin_path = bin_path(root, name);
+    spec.inputs = std::move(inputs);
+    spec.outputs = std::move(outputs);
+    spec.runtime.num_threads = threads;
+    return module.load(spec);
 }
 
 ncnn::Mat make_float_2d(int rows, int columns)
@@ -65,33 +76,20 @@ ncnn::Mat make_float_2d(int rows, int columns)
     return ncnn::Mat(columns, rows, static_cast<size_t>(4u), 1);
 }
 
-ncnn::Mat make_ids(const std::vector<int32_t>& ids)
+TextDecoderConfig text_decoder_config()
 {
-    ncnn::Mat result(static_cast<int>(ids.size()), static_cast<size_t>(4u), 1);
-    std::copy(ids.begin(), ids.end(), static_cast<int32_t*>(result.data));
-    return result;
-}
-
-Result<ncnn::Mat> embed(NcnnModule& module, const std::vector<int32_t>& ids)
-{
-    auto outputs = module.run({{"in0", make_ids(ids)}}, {"out0"});
-    if (!outputs) return Result<ncnn::Mat>(outputs.error());
-    ncnn::Mat value = std::move(outputs.value()[0]);
-    if (value.dims != 2 || value.w != kHidden || value.h != static_cast<int>(ids.size()))
-        return Result<ncnn::Mat>("unexpected token embedding shape");
-    return Result<ncnn::Mat>(std::move(value));
-}
-
-const std::array<double, kRopeDim>& rope_frequencies()
-{
-    static const auto frequencies = [] {
-        std::array<double, kRopeDim> values{};
-        for (int i = 0; i < kRopeDim; ++i)
-            values[static_cast<size_t>(i)] =
-                1.0 / std::pow(kRopeTheta, (2.0 * i) / kHeadDim);
-        return values;
-    }();
-    return frequencies;
+    TextDecoderConfig config;
+    config.hidden_size = kHidden;
+    config.layer_count = kLayers;
+    config.kv_head_count = kKvHeads;
+    config.head_dimension = kHeadDim;
+    config.rope_dimension = kRopeDim;
+    config.vocabulary_size = kVocabSize;
+    config.rope_theta = kRopeTheta;
+    config.mask_value = kMaskValue;
+    config.initial_cache_length = 1;
+    config.mask_initial_cache = true;
+    return config;
 }
 
 const std::array<float, kAudioChunkTokens * kAudioHidden>& audio_positions()
@@ -112,125 +110,24 @@ const std::array<float, kAudioChunkTokens * kAudioHidden>& audio_positions()
     return positions;
 }
 
-const std::vector<std::string>& decoder_input_names()
+std::vector<NcnnPort> decoder_inputs()
 {
-    static const auto names = [] {
-        std::vector<std::string> values;
-        values.reserve(4 + kLayers * 2);
-        for (int i = 0; i < 4 + kLayers * 2; ++i)
-            values.push_back("in" + std::to_string(i));
-        return values;
-    }();
-    return names;
-}
-
-const std::vector<std::string>& decoder_output_names()
-{
-    static const auto names = [] {
-        std::vector<std::string> values;
-        values.reserve(1 + kLayers * 2);
-        for (int i = 0; i < 1 + kLayers * 2; ++i)
-            values.push_back("out" + std::to_string(i));
-        return values;
-    }();
-    return names;
-}
-
-ncnn::Mat rope(int sequence, int position, bool cosine)
-{
-    const auto& frequencies = rope_frequencies();
-    ncnn::Mat result = make_float_2d(sequence, kRopeDim);
-    for (int row = 0; row < sequence; ++row) {
-        float* values = result.row(row);
-        for (int i = 0; i < kRopeDim; ++i) {
-            const double angle = static_cast<double>(position + row) *
-                                 frequencies[static_cast<size_t>(i)];
-            values[i] = static_cast<float>(cosine ? std::cos(angle) : std::sin(angle));
-        }
-    }
-    return result;
-}
-
-ncnn::Mat causal_mask(int sequence, int physical_past)
-{
-    ncnn::Mat result = make_float_2d(sequence, physical_past + sequence);
-    for (int row = 0; row < sequence; ++row) {
-        float* values = result.row(row);
-        for (int column = 0; column < physical_past + sequence; ++column) {
-            if (column == 0) values[column] = kMaskValue;
-            else if (column >= physical_past && column > physical_past + row) values[column] = kMaskValue;
-            else values[column] = 0.f;
-        }
-    }
-    return result;
-}
-
-std::vector<ncnn::Mat> sentinel_caches()
-{
-    std::vector<ncnn::Mat> caches;
-    caches.reserve(kLayers * 2);
-    for (int i = 0; i < kLayers * 2; ++i) {
-        ncnn::Mat cache(kHeadDim, 1, kKvHeads, static_cast<size_t>(4u), 1);
-        cache.fill(0.f);
-        caches.emplace_back(std::move(cache));
-    }
-    return caches;
-}
-
-struct DecoderOutput {
-    ncnn::Mat hidden;
-    std::vector<ncnn::Mat> caches;
-};
-
-Result<DecoderOutput> run_decoder(NcnnModule& decoder,
-                                  const ncnn::Mat& hidden,
-                                  int sequence,
-                                  int logical_position,
-                                  const std::vector<ncnn::Mat>& caches)
-{
-    if (static_cast<int>(caches.size()) != kLayers * 2)
-        return Result<DecoderOutput>("decoder requires 56 KV tensors");
-    const int physical_past = caches[0].h;
-    const auto& input_names = decoder_input_names();
-    std::vector<std::pair<std::string, ncnn::Mat>> inputs;
-    inputs.reserve(60);
-    inputs.emplace_back(input_names[0], hidden);
-    inputs.emplace_back(input_names[1], causal_mask(sequence, physical_past));
-    inputs.emplace_back(input_names[2], rope(sequence, logical_position, true));
-    inputs.emplace_back(input_names[3], rope(sequence, logical_position, false));
+    std::vector<NcnnPort> ports = {
+        {"hidden", "in0"}, {"attention_mask", "in1"},
+        {"rope_cos", "in2"}, {"rope_sin", "in3"}};
+    ports.reserve(4 + kLayers * 2);
     for (int i = 0; i < kLayers * 2; ++i)
-        inputs.emplace_back(input_names[static_cast<size_t>(i + 4)],
-                            caches[static_cast<size_t>(i)]);
-
-    auto outputs = decoder.run(inputs, decoder_output_names());
-    if (!outputs) return Result<DecoderOutput>(outputs.error());
-    if (outputs.value()[0].dims != 2 || outputs.value()[0].w != kHidden ||
-        outputs.value()[0].h != sequence)
-        return Result<DecoderOutput>("unexpected decoder hidden shape");
-
-    DecoderOutput result;
-    result.hidden = std::move(outputs.value()[0]);
-    result.caches.reserve(56);
-    for (size_t i = 1; i < outputs.value().size(); ++i)
-        result.caches.emplace_back(std::move(outputs.value()[i]));
-    return Result<DecoderOutput>(std::move(result));
+        ports.push_back({"cache_" + std::to_string(i), "in" + std::to_string(i + 4)});
+    return ports;
 }
 
-Result<int32_t> next_token(NcnnModule& lm_head, const ncnn::Mat& hidden, int row)
+std::vector<NcnnPort> decoder_outputs()
 {
-    ncnn::Mat last(kHidden, static_cast<size_t>(4u), 1);
-    const float* source = hidden.row(row);
-    std::copy(source, source + kHidden, static_cast<float*>(last.data));
-    auto output = lm_head.run({{"in0", last}}, {"out0"});
-    if (!output) return Result<int32_t>(output.error());
-    const ncnn::Mat& logits = output.value()[0];
-    if (logits.total() != kVocabSize) return Result<int32_t>("unexpected LM Head output shape");
-    const float* values = static_cast<const float*>(logits.data);
-    int32_t best = 0;
-    for (int32_t i = 1; i < kVocabSize; ++i) {
-        if (values[i] > values[best]) best = i;
-    }
-    return Result<int32_t>(best);
+    std::vector<NcnnPort> ports = {{"hidden", "out0"}};
+    ports.reserve(1 + kLayers * 2);
+    for (int i = 0; i < kLayers * 2; ++i)
+        ports.push_back({"cache_" + std::to_string(i), "out" + std::to_string(i + 1)});
+    return ports;
 }
 
 void append_ids(std::vector<int32_t>& output, const std::vector<int32_t>& input)
@@ -307,6 +204,9 @@ public:
                       const std::string& assets_dir,
                       int requested_threads)
     {
+        std::lock_guard<std::mutex> lock(mutex);
+        loaded = false;
+        unload_modules();
         static const std::vector<std::string> modules = {
             "audio_conv", "audio_transformer", "embed_token", "decoder", "lm_head"};
         for (const std::string& module : modules) {
@@ -318,19 +218,30 @@ public:
         const std::string merges = (std::filesystem::path(assets_dir) / "merges.txt").string();
         auto token_status = tokenizer.load(vocab, merges);
         if (!token_status) return token_status;
-        model_root = model_dir;
-        threads = requested_threads > 0 ? requested_threads :
-                  std::max(1u, std::thread::hardware_concurrency());
+
+        const int threads = requested_threads > 0 ? requested_threads :
+                            std::max(1u, std::thread::hardware_concurrency());
+        auto status = load_module(audio_conv, model_dir, "audio_conv", threads,
+                                  {{"features", "in0"}}, {{"encoded", "out0"}});
+        if (!status) return load_failure(status.error());
+        status = load_module(audio_transformer, model_dir, "audio_transformer", threads,
+                             {{"features", "in0"}}, {{"encoded", "out0"}});
+        if (!status) return load_failure(status.error());
+        status = load_module(embedding, model_dir, "embed_token", threads,
+                             {{"token_ids", "in0"}}, {{"embeddings", "out0"}});
+        if (!status) return load_failure(status.error());
+        status = load_module(decoder, model_dir, "decoder", threads,
+                             decoder_inputs(), decoder_outputs());
+        if (!status) return load_failure(status.error());
+        status = load_module(lm_head, model_dir, "lm_head", threads,
+                             {{"hidden", "in0"}}, {{"logits", "out0"}});
+        if (!status) return load_failure(status.error());
         loaded = true;
         return Result<bool>(true);
     }
 
     Result<ncnn::Mat> encode_audio(const LogMelFeatures& mel)
     {
-        NcnnModule audio_conv;
-        auto load = load_module(audio_conv, model_root, "audio_conv", threads);
-        if (!load) return Result<ncnn::Mat>(load.error());
-
         const int full_chunks = mel.frames / kAudioChunkFrames;
         const int tail_frames = mel.frames % kAudioChunkFrames;
         const int conv_tokens = full_chunks * kAudioChunkTokens +
@@ -353,7 +264,7 @@ public:
                 const float* source = mel.values.data() + static_cast<size_t>(bin * mel.frames + start);
                 std::copy(source, source + width, row);
             }
-            auto output = audio_conv.run({{"in0", conv_input}}, {"out0"});
+            auto output = audio_conv.run({{"features", conv_input}}, {"encoded"});
             if (!output) return Result<ncnn::Mat>(output.error());
             const ncnn::Mat& chunk = output.value()[0];
             const int expected = (width + 7) / 8;
@@ -370,16 +281,11 @@ public:
         }
         if (output_row != conv_tokens)
             return Result<ncnn::Mat>("Audio Conv token count mismatch");
-        audio_conv.clear();
-
-        NcnnModule transformer;
-        load = load_module(transformer, model_root, "audio_transformer", threads);
-        if (!load) return Result<ncnn::Mat>(load.error());
         // The reference CPU/SDPA path passes cu_seqlens but no block mask to
         // SDPA, so all audio tokens attend globally. Splitting at 104 changes
         // model semantics even though it matches the intended FlashAttention
         // varlen scheduling. CPU FP32 parity therefore requires one dense call.
-        auto output = transformer.run({{"in0", transformer_input}}, {"out0"});
+        auto output = audio_transformer.run({{"features", transformer_input}}, {"encoded"});
         if (!output) return Result<ncnn::Mat>(output.error());
         ncnn::Mat audio = std::move(output.value()[0]);
         if (audio.dims != 2 || audio.w != kHidden || audio.h != conv_tokens)
@@ -389,18 +295,13 @@ public:
 
     Result<AsrResult> transcribe(const AudioBuffer& audio, const AsrOptions& options)
     {
+        std::lock_guard<std::mutex> lock(mutex);
         if (!loaded) return Result<AsrResult>("Qwen3Asr is not loaded");
-        if (audio.sample_rate != 16000 || audio.channels != 1)
-            return Result<AsrResult>("Qwen3-ASR first version requires mono 16 kHz PCM");
         if (options.max_new_tokens <= 0) return Result<AsrResult>("max_new_tokens must be positive");
 
         AsrResult result;
         auto begin = Clock::now();
-        // Canonicalize the PCM before both reference and ncnn feature paths.
-        // See prepare_qwen3_asr_frontend_samples for the upstream partial-hop
-        // mask/feature inconsistency that this compatibility step resolves.
-        auto frontend_samples = prepare_qwen3_asr_frontend_samples(audio.samples);
-        auto mel = frontend.compute(frontend_samples);
+        auto mel = audio_processor.process(audio);
         if (!mel) return Result<AsrResult>(mel.error());
         result.frontend_ms = elapsed_ms(begin);
 
@@ -412,10 +313,8 @@ public:
         auto prompt = build_prompt(tokenizer, audio_embeddings.value().h, options);
         if (!prompt) return Result<AsrResult>(prompt.error());
 
-        NcnnModule embedding;
-        auto load = load_module(embedding, model_root, "embed_token", threads);
-        if (!load) return Result<AsrResult>(load.error());
-        auto prompt_embeddings = embed(embedding, prompt.value());
+        TextDecoder text_decoder(embedding, decoder, lm_head, text_decoder_config());
+        auto prompt_embeddings = text_decoder.embed_tokens(prompt.value());
         if (!prompt_embeddings) return Result<AsrResult>(prompt_embeddings.error());
         int audio_row = 0;
         for (size_t row = 0; row < prompt.value().size(); ++row) {
@@ -431,41 +330,16 @@ public:
             return Result<AsrResult>("audio placeholder count does not match audio embeddings");
         audio_embeddings.value().release();
 
-        NcnnModule decoder;
-        load = load_module(decoder, model_root, "decoder", threads);
-        if (!load) return Result<AsrResult>(load.error());
-        NcnnModule lm_head;
-        load = load_module(lm_head, model_root, "lm_head", threads);
-        if (!load) return Result<AsrResult>(load.error());
-
-        begin = Clock::now();
-        auto decoded = run_decoder(decoder, prompt_embeddings.value(),
-                                   static_cast<int>(prompt.value().size()), 0, sentinel_caches());
-        if (!decoded) return Result<AsrResult>(decoded.error());
-        prompt_embeddings.value().release();
-        auto token = next_token(lm_head, decoded.value().hidden,
-                                static_cast<int>(prompt.value().size()) - 1);
-        if (!token) return Result<AsrResult>(token.error());
-        result.prefill_ms = elapsed_ms(begin);
-
-        begin = Clock::now();
-        int logical_position = static_cast<int>(prompt.value().size());
-        for (int step = 0; step < options.max_new_tokens; ++step) {
-            const int32_t id = token.value();
-            if (id == kEndOfText || id == kImEnd) break;
-            result.token_ids.push_back(id);
-
-            auto token_embedding = embed(embedding, {id});
-            if (!token_embedding) return Result<AsrResult>(token_embedding.error());
-            auto next = run_decoder(decoder, token_embedding.value(), 1,
-                                    logical_position, decoded.value().caches);
-            if (!next) return Result<AsrResult>(next.error());
-            decoded = std::move(next);
-            ++logical_position;
-            token = next_token(lm_head, decoded.value().hidden, 0);
-            if (!token) return Result<AsrResult>(token.error());
-        }
-        result.decode_ms = elapsed_ms(begin);
+        TextGenerationOptions generation_options;
+        generation_options.max_new_tokens = options.max_new_tokens;
+        generation_options.stop_token_ids = {kEndOfText, kImEnd};
+        auto generated = text_decoder.generate(prompt_embeddings.value(),
+                                               static_cast<int>(prompt.value().size()),
+                                               generation_options);
+        if (!generated) return Result<AsrResult>(generated.error());
+        result.token_ids = std::move(generated.value().token_ids);
+        result.prefill_ms = generated.value().prefill_ms;
+        result.decode_ms = generated.value().decode_ms;
 
         auto raw = tokenizer.decode(result.token_ids, true);
         if (!raw) return Result<AsrResult>(raw.error());
@@ -474,11 +348,31 @@ public:
         return Result<AsrResult>(std::move(result));
     }
 
-    std::string model_root;
-    int threads = 1;
+private:
+    Result<bool> load_failure(const std::string& error)
+    {
+        unload_modules();
+        return Result<bool>(error);
+    }
+
+    void unload_modules()
+    {
+        audio_conv.unload();
+        audio_transformer.unload();
+        embedding.unload();
+        decoder.unload();
+        lm_head.unload();
+    }
+
+    std::mutex mutex;
     bool loaded = false;
-    WhisperLogMel frontend;
+    Qwen3AsrAudioProcessor audio_processor;
     Qwen2Tokenizer tokenizer;
+    NcnnModule audio_conv;
+    NcnnModule audio_transformer;
+    NcnnModule embedding;
+    NcnnModule decoder;
+    NcnnModule lm_head;
 };
 
 Qwen3Asr::Qwen3Asr() : impl_(std::make_unique<Impl>()) {}
