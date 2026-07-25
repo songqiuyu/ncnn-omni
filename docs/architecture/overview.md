@@ -1,6 +1,6 @@
 # ncnn-omni architecture
 
-Status: design baseline, pre-implementation
+Status: design baseline, partially implemented by the Qwen3-ASR vertical slice
 
 ## 1. Mission
 
@@ -534,7 +534,7 @@ Forbidden:
 - bindings reaching into `src/models` or raw ncnn;
 - one model adapter including another model adapter's private headers.
 
-## 12. Initial repository layout
+## 12. Target repository layout
 
 ```text
 ncnn-omni/
@@ -559,8 +559,9 @@ ncnn-omni/
 └── third_party/
 ```
 
-Directory placeholders are created now; concrete headers are intentionally not
-frozen until the first vertical Qwen3-ASR slice proves the contracts.
+This is a target decomposition, not a requirement to keep placeholder folders.
+The repository creates each directory only when a working vertical slice needs
+it; until then the boundary remains a documented design rather than empty files.
 
 ## 13. Architecture acceptance tests
 

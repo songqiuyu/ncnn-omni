@@ -17,6 +17,11 @@ printed, and malformed/path-traversal packages are rejected.
 
 ## M1 — Qwen3-ASR CPU vertical slice
 
+Status: first correctness slice is runnable; broader session, cancellation, and
+fixture coverage in this milestone remains open.
+
+Detailed execution plan: [Qwen3-ASR phase 1](plans/qwen3-asr-phase1.md).
+
 - Audio decode/resample/feature processor.
 - `NcnnModule` load/run/unload with checked return codes.
 - Text embedding, decoder/KV, LM head, sampler, incremental detokenizer.

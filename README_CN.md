@@ -18,31 +18,51 @@ Qwen3-ASR、一个 Qwen VLM 和 Qwen3-TTS。
 
 ## 当前状态
 
-项目目前处于设计和目录搭建阶段，尚未声明稳定公共 API 或可运行推理库。
+Qwen3-ASR-0.6B 的第一版桌面 CPU FP32 纵向链路已经可以运行，包括可复用的音频
+I/O 与 Whisper 兼容 Log-Mel、常驻加载的五个 ncnn 子模型、独立的通用文本
+KV-cache 解码器和 token 级对齐工具；完整音频前处理 tensor 也已完成数值对齐。
+公共 API 目前仍为实验状态。
 
 - [设计文档索引](docs/README.md)
 - [总体架构](docs/architecture/overview.md)
 - [推理引擎调研](docs/research/inference-engine-survey.md)
 - [模型包设计](docs/architecture/model-package.md)
 - [实现路线](docs/roadmap.md)
+- [Qwen3-ASR 第一版运行指南](docs/guides/qwen3-asr-first-run.md)
+- [音频前处理对齐报告](docs/diagnostics/qwen3-asr-audio-frontend-parity.md)
+- [长音频根因报告](docs/diagnostics/qwen3-asr-long-prefill-divergence.md)
 
-## 初始目录
+## 实现亮点
+
+- **纯 C++ 部署：** PyTorch 和 Transformers 只用于离线验证，不进入运行时。
+- **五个 ncnn 子图独立验证：** Audio Conv、Audio Transformer、Token
+  Embedding、Text Decoder/KV Cache 和 LM Head 均有差分证据。
+- **图外语义正确：** final-hop 兼容处理、带 bias 的 Conv 尾块 padding、
+  CPU/SDPA 全局 Audio Attention、embedding 融合、RoPE 和 sentinel KV mask
+  都由清晰的 C++ 逻辑负责。
+- **严格对齐：** 归一化 PCM 逐样本相等，完整 Log-Mel 最大误差不超过
+  `2.23e-5`，现有长音频的每一个 greedy token 均与 Transformers 相等。
+- **正确性优先且可检查：** CPU FP32 是基线；其他后端和精度必须建立自己的
+  parity 结果，不能继承结论。
+- **精简热路径：** Whisper DFT 系数、RoPE 频率和音频位置编码只预计算一次；
+  Conv 输出直接写入 Audio Transformer 输入，不再经过中间 tensor 复制。
+
+## 当前目录
 
 ```text
-include/ncnn_omni/   公共 C++ 接口
-src/core/            Engine、Session 和资源管理
-src/runtime/ncnn/    直接调用 ncnn 的执行适配层
-src/pipeline/        Stage、拓扑、队列和调度策略
-src/processors/      文本、图像和音频预处理
-src/generation/      文本与音频生成引擎
-src/models/          模型族适配器
-bindings/            C ABI 与平台语言绑定
-tools/               转换、检查和性能工具
-tests/               单元、集成和精度对齐测试
+include/ncnn_omni/   通用音频/ASR 类型与 Qwen3-ASR 任务 API
+src/models/          Qwen3-ASR 模型适配与 embedding 编排
+src/processors/      WAV、tokenizer、Log-Mel 与模型音频策略
+src/generation/      与任务无关的文本自回归/KV 解码循环
+src/runtime/ncnn/    模块规格、逻辑端口、运行选项与执行
+examples/asr/        可直接运行的 CLI
+tools/parity/        前处理与端到端差分工具
+tests/unit/          确定性的处理器/tokenizer 测试
+docs/                架构、调研、指南和验证证据
 ```
 
-第一条实现路径是 Qwen3-ASR CPU 纵向切片。在 ASR、VLM 和流式 TTS 共同验证
-公共抽象之前，所有接口均保持实验状态。
+物理目录只表达已经实现的代码。通用多模态 Engine、VLM、TTS、bindings 和平台层
+在出现真实实现并验证边界之前，只保留在架构文档中，不用空目录假装已经落地。
 
 ## Star 趋势
 
